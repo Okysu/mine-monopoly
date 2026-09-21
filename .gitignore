@@ -169,3 +169,6 @@ AGENTS.md
 
 # buildx 临时目录
 .tmp-buildx/
+
+# Android 签名密钥（切勿提交）
+.secrets/

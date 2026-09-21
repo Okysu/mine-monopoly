@@ -1,0 +1,152 @@
+name: Build Android APK
+
+# 只构建安卓 APK，产出 GitHub Actions 可下载的 artifact。
+# 不依赖 R2 / webhook —— 签名的 keystore 是可选的（缺了会退回 debug 签名，
+# 但那样每次构建签名都不同，装新版必须先卸载，而游戏存档存在本地会一起丢）。
+#
+# 服务器地址在构建时写死进 bundle，取自仓库 Variables：
+#   MONOPOLY_DOMAIN / PROTOCOL / SERVER_PORT / ICE_SERVER_PORT /
+#   MONOPOLY_ADMIN_PORT
+# 以及仓库 Secrets：
+#   MAP_ENCRYPT_KEY（必须和服务器端一致）
+#   ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PASSWORD /
+#   ANDROID_KEY_ALIAS / ANDROID_KEY_PASSWORD（建议配置，保证签名稳定）
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: '覆盖 APK 版本号（留空则用 apps/client/package.json 的版本）'
+        required: false
+        type: string
+
+concurrency:
+  group: build-android-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-36 build-tools;36.0.0'
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      # 客户端 vite.config.ts 直接 import "@mine-monopoly/env/vite-plugin"，
+      # 该子路径指向 packages/env/dist/，不先构建就解析不到
+      - name: 构建 @mine-monopoly/env
+        run: pnpm --filter @mine-monopoly/env run build
+
+      - name: （可选）覆盖版本号
+        if: inputs.version_name != ''
+        run: |
+          sed -i 's/"version": "[^"]*"/"version": "${{ inputs.version_name }}"/' apps/client/package.json
+          node -p "'版本号 -> ' + require('./apps/client/package.json').version"
+
+      - name: 生成 .env（服务器地址在这里写死进 APK）
+        run: |
+          cat > .env << 'EOF'
+          MONOPOLY_DOMAIN=${{ vars.MONOPOLY_DOMAIN }}
+          PROTOCOL=${{ vars.PROTOCOL }}
+          API_BASE_PREFIX=${{ vars.API_BASE_PREFIX || '' }}
+          ICE_BASE_PREFIX=${{ vars.ICE_BASE_PREFIX || '' }}
+          ADMIN_BASE_PREFIX=${{ vars.ADMIN_BASE_PREFIX || '' }}
+          SERVER_PORT=${{ vars.SERVER_PORT }}
+          ICE_SERVER_PORT=${{ vars.ICE_SERVER_PORT }}
+          MONOPOLY_ADMIN_PORT=${{ vars.MONOPOLY_ADMIN_PORT }}
+          NODE_ENV=production
+          MAP_ENCRYPT_KEY=${{ secrets.MAP_ENCRYPT_KEY }}
+          EOF
+
+          if [ -z "${{ vars.MONOPOLY_DOMAIN }}" ]; then
+            echo "::error::仓库 Variables 里没配 MONOPOLY_DOMAIN，APK 会连不上服务器"
+            exit 1
+          fi
+
+      - name: 构建前端（capacitor 模式）
+        run: pnpm --filter @mine-monopoly/client run build:capacitor
+
+      - name: 校验服务器地址确实打进了产物
+        run: |
+          DOMAIN="${{ vars.MONOPOLY_DOMAIN }}"
+          if grep -rq "$DOMAIN" apps/client/dist/frontend/assets/; then
+            echo "✅ 产物中已包含服务器地址 $DOMAIN"
+          else
+            echo "::error::产物中找不到 $DOMAIN，检查仓库 Variables 是否配全"
+            exit 1
+          fi
+
+      - name: Capacitor sync（把前端产物拷进 android 工程）
+        working-directory: apps/client
+        run: npx cap sync android
+
+      - name: 构建 APK
+        working-directory: apps/client/android
+        run: ./gradlew assembleRelease --no-daemon
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+
+      - name: 整理产物
+        id: apk
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./apps/client/package.json').version")
+          SRC=$(find apps/client/android/app/build/outputs/apk -name "*.apk" | head -1)
+          if [ -z "$SRC" ]; then
+            echo "::error::没找到 APK 产物"
+            exit 1
+          fi
+          mkdir -p dist-android
+          OUT="dist-android/MineMonopoly-Android-${VERSION}.apk"
+          cp "$SRC" "$OUT"
+
+          # 检查签名：用 debug 密钥签的包每次构建签名都不同，装新版要先卸载
+          if command -v apksigner >/dev/null 2>&1; then
+            SIGNER=$(apksigner verify --print-certs "$OUT" 2>/dev/null | grep -m1 "Signer #1 certificate DN" || true)
+            echo "签名: ${SIGNER:-未知}"
+          fi
+
+          {
+            echo "### Android APK 构建完成"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "| --- | --- |"
+            echo "| 版本 | \`${VERSION}\` |"
+            echo "| 大小 | \`$(du -h "$OUT" | cut -f1)\` |"
+            echo "| 服务器 | \`${{ vars.PROTOCOL }}://${{ vars.MONOPOLY_DOMAIN }}:${{ vars.SERVER_PORT }}\` |"
+            echo "| 信令 | \`${{ vars.PROTOCOL }}://${{ vars.MONOPOLY_DOMAIN }}:${{ vars.ICE_SERVER_PORT }}\` |"
+            echo "| 文件 | \`$(basename "$OUT")\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "file=$OUT" >> "$GITHUB_OUTPUT"
+
+      - name: 上传 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MineMonopoly-Android-APK
+          path: ${{ steps.apk.outputs.file }}
+          if-no-files-found: error
+          retention-days: 30
