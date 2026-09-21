@@ -1,0 +1,29 @@
+# Dockerfile.web 专用的构建上下文过滤
+# （根目录的 .dockerignore 会排除 apps/client，那份是给服务端镜像用的）
+
+**/node_modules
+**/dist
+**/output
+**/*.tsbuildinfo
+
+.git
+.gitignore
+.worktrees
+.ssh-tmp
+.tmp-buildx
+.web-dist
+
+# 与网页版构建无关
+docs
+apps/map-editor
+apps/client/android
+apps/client/ios
+apps/client/electron
+docker
+docker-compose.dokploy.yml
+docker-compose.rainyun.yml
+vercel.json
+dokploy.env
+.env
+
+*.log

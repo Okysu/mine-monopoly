@@ -160,3 +160,12 @@ AGENTS.md
 /.agents
 
 .codegraph
+
+# 临时 SSH 私钥（切勿提交）
+.ssh-tmp/
+
+# 前端构建产物导出目录
+.web-dist/
+
+# buildx 临时目录
+.tmp-buildx/

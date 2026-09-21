@@ -1,0 +1,181 @@
+# ============================================================================
+# 自建服务器部署（纯 Docker Compose，不依赖 Dokploy / K8s / 雨云 RCA）
+#
+# 四个容器：
+#   web     nginx，托管网页版客户端静态产物        :80
+#   main    API 8081 / ICE 8082 / Admin 8083
+#   mysql   仅 compose 内网，不对外暴露
+#   coturn  STUN/TURN，中继端口段 49160-49200
+#
+# 用法：
+#   cd /opt/mine-monopoly
+#   docker compose up -d
+#
+# 同目录 .env 至少要填：
+#   MONOPOLY_DOMAIN / PROTOCOL / EXTERNAL_IP
+#   MYSQL_PASSWORD / MYSQL_ROOT_PASSWORD / MAP_ENCRYPT_KEY / TURN_SECRET
+#
+# 安全组 / 防火墙需要放行：
+#   TCP 80              网页版客户端
+#   TCP 8081/8082/8083  API / 信令 / 管理面板
+#   TCP 3478            TURN over TCP
+#   UDP 3478            STUN/TURN（最容易漏）
+#   UDP 49160-49200     TURN 中继端口段
+#
+# 网页版客户端的静态产物不在仓库里，需要用根目录的 Dockerfile.web 构建后
+# 放到 ./web/，见该文件头部说明。不想要网页版就把 web 服务整段删掉。
+# ============================================================================
+
+services:
+  # --------------------------------------------------------------------------
+  # 网页版客户端：nginx 托管 Vite 静态产物
+  # --------------------------------------------------------------------------
+  web:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./web:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - monopoly
+
+  # --------------------------------------------------------------------------
+  # 主容器：API + ICE/PeerJS 信令 + Admin 管理面板
+  # --------------------------------------------------------------------------
+  main:
+    image: ${IMAGE:-ghcr.io/okysu/mine-monopoly-server:latest}
+    restart: unless-stopped
+    depends_on:
+      - mysql
+    environment:
+      # ---- 容器内端口（改了要同步改客户端构建配置，一般别动）----
+      SERVER_PORT: "8081"
+      ICE_SERVER_PORT: "8082"
+      MONOPOLY_ADMIN_PORT: "8083"
+
+      # ---- 对外访问地址 ----
+      # 端口模式（直连 IP）：PROTOCOL=http，MONOPOLY_DOMAIN=服务器 IP，前缀留空
+      # 域名+HTTPS：PROTOCOL=https，MONOPOLY_DOMAIN=域名，并填下面两个前缀
+      PROTOCOL: ${PROTOCOL:-http}
+      MONOPOLY_DOMAIN: ${MONOPOLY_DOMAIN:-localhost}
+      API_BASE_PREFIX: ${API_BASE_PREFIX:-}
+      ICE_BASE_PREFIX: ${ICE_BASE_PREFIX:-}
+      ADMIN_BASE_PREFIX: ${ADMIN_BASE_PREFIX:-}
+
+      # ---- MySQL（主机名固定用 compose 服务名 mysql）----
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: monopoly
+      MYSQL_USERNAME: monopoly
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-change-me-db-password}
+
+      # ---- TURN / STUN（coturn 就在同一个 compose 里）----
+      # TURN_URL 不填时自动跟随 MONOPOLY_DOMAIN
+      TURN_URL: ${TURN_URL:-${MONOPOLY_DOMAIN:-127.0.0.1}}
+      TURN_PORT: ${TURN_PORT:-5349}
+      STUN_PORT: ${STUN_PORT:-3478}
+      TURN_SECRET: ${TURN_SECRET:-change-me-turn-secret}
+      TURN_TTL: ${TURN_TTL:-86400}
+      COTURN_METRICS_URL: ${COTURN_METRICS_URL:-http://coturn:9641/metrics}
+
+      # ---- 运行环境 ----
+      NODE_ENV: production
+      # 必须是 16 位 ASCII 字符；改了之后客户端也要用同一个值重新构建
+      MAP_ENCRYPT_KEY: ${MAP_ENCRYPT_KEY:-ChangeMe16Char!!}
+      AVATAR_STORAGE_PATH: monopoly/user-avatar
+      GAME_MAP_STORAGE_PATH: monopoly/game-map
+
+      # ---- 可选：腾讯云 COS（不配就落在命名卷里）----
+      # TC_ID: ${TC_ID:-}
+      # TC_KEY: ${TC_KEY:-}
+      # TC_BUCKET_NAME: ${TC_BUCKET_NAME:-}
+      # TC_REGION: ${TC_REGION:-}
+
+    ports:
+      - "8081:8081"
+      - "8082:8082"
+      - "8083:8083"
+
+    volumes:
+      # 头像 / 地图 / 日志
+      - monopoly-public:/app/public
+
+    networks:
+      - monopoly
+
+  # --------------------------------------------------------------------------
+  # MySQL：只走 compose 内网，不对外暴露端口
+  # --------------------------------------------------------------------------
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change-me-root-password}
+      MYSQL_DATABASE: monopoly
+      MYSQL_USER: monopoly
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-change-me-db-password}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - mysql-data:/var/lib/mysql
+    networks:
+      - monopoly
+
+  # --------------------------------------------------------------------------
+  # coturn：WebRTC 中继（对称 NAT / 严格网络下联机必需）
+  #
+  # 为什么用 bridge + 端口段发布，而不是 network_mode: host：
+  #   · Docker 支持发布端口「段」，所以 49160-49200 这一段 UDP 可以整体映射，
+  #     不需要 host 网络
+  #   · bridge 下 coturn 和 main 在同一个 compose 内网，Admin 面板可以直接用
+  #     http://coturn:9641/metrics 抓 TURN 指标
+  # 代价：容器内看不到宿主机公网 IP，所以 EXTERNAL_IP 变成必填项。
+  #
+  # 说明：这里没有启用 turns:（5349/TLS），因为那需要把证书放进容器。
+  # 只提供 UDP TURN 对绝大多数家用/移动网络已经够用；确实需要 TLS 中继，
+  # 用 docker/coturn/docker-compose.yml 单独部署并挂载证书。
+  # --------------------------------------------------------------------------
+  coturn:
+    image: coturn/coturn:debian
+    restart: unless-stopped
+    environment:
+      TURN_REALM: ${TURN_REALM:-${MONOPOLY_DOMAIN:-monopoly}}
+      TURN_SECRET: ${TURN_SECRET:-change-me-turn-secret}
+      # 必填：服务器公网 IP。bridge 网络里 coturn 探测不到公网地址，
+      # 不填的话分配出去的中继地址会是容器内网 IP（172.x），客户端连不上。
+      EXTERNAL_IP: ${EXTERNAL_IP:?coturn 需要 EXTERNAL_IP，请在 .env 里填服务器公网 IP}
+      TURN_MIN_PORT: ${TURN_MIN_PORT:-49160}
+      TURN_MAX_PORT: ${TURN_MAX_PORT:-49200}
+    ports:
+      - "3478:3478/udp"
+      - "3478:3478/tcp"
+      - "${TURN_MIN_PORT:-49160}-${TURN_MAX_PORT:-49200}:${TURN_MIN_PORT:-49160}-${TURN_MAX_PORT:-49200}/udp"
+    networks:
+      - monopoly
+    # coturn 配置文件不支持环境变量展开，所以全部用命令行参数传
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        set -- turnserver --log-file=stdout --fingerprint \
+          --listening-port=3478 \
+          --realm="$$TURN_REALM" \
+          --static-auth-secret="$$TURN_SECRET" \
+          --min-port="$$TURN_MIN_PORT" \
+          --max-port="$$TURN_MAX_PORT" \
+          --prometheus --prometheus-port=9641 \
+          --external-ip="$$EXTERNAL_IP"
+        echo "[coturn] exec: $$*"
+        exec "$$@"
+
+volumes:
+  monopoly-public:
+  mysql-data:
+
+networks:
+  # main ↔ mysql ↔ coturn 的内网
+  monopoly:
+    driver: bridge

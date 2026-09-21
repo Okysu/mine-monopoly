@@ -1,0 +1,59 @@
+# syntax=docker/dockerfile:1.7
+#
+# 构建「网页版客户端」静态产物（纯 Vite 构建，不含 Electron / Capacitor）
+#
+#   docker build -f Dockerfile.web \
+#     --build-arg MONOPOLY_DOMAIN=1.2.3.4 \
+#     --build-arg PROTOCOL=http \
+#     --build-arg SERVER_PORT=8081 \
+#     --build-arg ICE_SERVER_PORT=8082 \
+#     --build-arg MONOPOLY_ADMIN_PORT=8083 \
+#     --build-arg MAP_ENCRYPT_KEY=xxxxxxxxxxxxxxxx \
+#     --build-arg VITE_WEB_BASE_PATH=/ \
+#     --output type=local,dest=./web-dist .
+#
+# 产物会直接导出到 ./web-dist（就是 apps/client/dist/frontend 的内容）。
+#
+# 注意：客户端的环境变量是**构建时写死**的（vite envPlugin 把 process.env 注入
+# 到 __ENV_VARS__），所以改服务器地址必须重新构建本产物。
+
+FROM node:20-alpine AS builder
+
+ARG PNPM_VERSION=10.10.0
+RUN corepack enable && corepack prepare pnpm@${PNPM_VERSION} --activate
+
+# Electron / Puppeteer 的二进制下载对网页版构建毫无用处，跳过以节省时间和体积
+ENV ELECTRON_SKIP_BINARY_DOWNLOAD=1 \
+    PUPPETEER_SKIP_DOWNLOAD=1
+
+WORKDIR /app
+
+COPY . .
+
+RUN pnpm install --frozen-lockfile
+
+# packages/env 必须先构建：apps/client/vite.config.ts 里
+# `import { envPlugin } from "@mine-monopoly/env/vite-plugin"` 指向 dist/
+RUN pnpm --filter @mine-monopoly/env run build
+
+# 客户端在构建时读取这些变量并写死进 bundle
+ARG MONOPOLY_DOMAIN
+ARG PROTOCOL
+ARG SERVER_PORT
+ARG ICE_SERVER_PORT
+ARG MONOPOLY_ADMIN_PORT
+ARG MAP_ENCRYPT_KEY
+ARG VITE_WEB_BASE_PATH=/
+ENV MONOPOLY_DOMAIN=${MONOPOLY_DOMAIN} \
+    PROTOCOL=${PROTOCOL} \
+    SERVER_PORT=${SERVER_PORT} \
+    ICE_SERVER_PORT=${ICE_SERVER_PORT} \
+    MONOPOLY_ADMIN_PORT=${MONOPOLY_ADMIN_PORT} \
+    MAP_ENCRYPT_KEY=${MAP_ENCRYPT_KEY} \
+    VITE_WEB_BASE_PATH=${VITE_WEB_BASE_PATH}
+
+RUN pnpm --filter @mine-monopoly/client run build:web
+
+# 把静态产物导出成 tar/目录（配合 --output type=local 使用）
+FROM scratch AS export
+COPY --from=builder /app/apps/client/dist/frontend /
