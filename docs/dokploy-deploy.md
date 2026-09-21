@@ -4,7 +4,7 @@
 
 - `main`：API + ICE/PeerJS 信令 + Admin 管理面板
 - `mysql`：内网数据库
-- `coturn`：STUN/TURN 中继（联机必需，host 网络）
+- `coturn`：STUN/TURN 中继（联机必需，bridge 网络 + 端口段发布）
 
 ```
                         ┌──────── Dokploy / 同一台 VPS ────────┐
@@ -204,7 +204,12 @@ WARNING cannot start TLS and DTLS listeners because certificate file is not set 
 
 自建服务器最容易踩的坑：**客户端（网页版 / Electron / Android）的服务器地址是构建时写死的**。客户端源码里 `global.config.ts` 全部走 `env()` 构建期注入，没有 `env.js`，UI 里也没有「填写服务器地址」的设置项 —— 官方发布的客户端**只能连 `fatpaper.site`**。
 
-所以要让客户端连你的 `rich.oky.su`，得自己构建。改仓库的 **Settings → Secrets and variables → Actions → Variables**：
+两条路：
+
+- **省事**：把网页版丢到 Vercel，玩家直接用浏览器玩 → 见 [用 Vercel 部署网页版客户端](vercel-web-client.md)
+- **要桌面/安卓包**：自己构建，往下看
+
+改仓库的 **Settings → Secrets and variables → Actions → Variables**：
 
 | Variable | 值（对应上面的 HTTPS 域名模式） |
 | --- | --- |

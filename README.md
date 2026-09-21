@@ -303,14 +303,17 @@ ghcr.io/<你的 GitHub 用户名（小写）>/mine-monopoly-server:latest
 | 文件                                          | 说明                                                     |
 | --------------------------------------------- | -------------------------------------------------------- |
 | `.github/workflows/docker-image.yml`          | 构建并推送镜像到 GHCR（amd64 + arm64）                   |
-| `docker-compose.dokploy.yml`                  | Dokploy Compose 部署（服务端 + MySQL）                   |
+| `docker-compose.dokploy.yml`                  | Dokploy Compose 部署（服务端 + MySQL + coturn）          |
 | `docker-compose.rainyun.yml`                  | 雨云 RCA「从 Docker 导入」用的 compose（服务端 + MySQL） |
+| `vercel.json`                                 | 网页版客户端部署到 Vercel 的构建配置                     |
 | [Dokploy 部署指南](docs/dokploy-deploy.md)    | 完整部署步骤、环境变量表、HTTPS 域名、常见问题           |
 | [雨云 RCA 部署指南](docs/rainyun-deploy.md)   | 雨云 RCA 部署步骤、环境变量表、常见问题                  |
 | [coturn 独立部署](docker/coturn/README.md)    | RCA/K8s 上无法运行 coturn，需要单独一台公网 VPS          |
 
-> coturn 需要一整段连续的 UDP 中继端口和公网 IP，无法跑在 K8s（RCA）里；Dokploy 上则必须用 host 网络模式单独部署。
-> 另外客户端（网页/Electron/Android）的服务器地址是**构建时写死**的，自建服务器需要重新构建客户端，详见部署指南。
+> coturn 需要一整段连续的 UDP 中继端口和公网 IP，无法跑在 K8s（RCA）里，需要单独一台公网 VPS；
+> Dokploy 上可以直接包含在同一个 compose 里（bridge 网络 + 端口段发布）。
+> 另外客户端（网页/Electron/Android）的服务器地址是**构建时写死**的，自建服务器需要重新构建客户端，
+> 网页版可以直接挂到 Vercel，详见部署指南。
 
 ## 文档
 
@@ -320,6 +323,7 @@ ghcr.io/<你的 GitHub 用户名（小写）>/mine-monopoly-server:latest
 | [游戏进程 API](docs/game-process-api.md)      | effectCode 公开 API 参考     |
 | [修饰器系统 API](docs/api/modifier-system.md) | 修饰器模板用法与迁移指南     |
 | [Dokploy 部署指南](docs/dokploy-deploy.md)    | 用 Dokploy Compose 部署服务端 |
+| [Vercel 部署网页版客户端](docs/vercel-web-client.md) | 把网页版客户端挂到 Vercel |
 | [雨云 RCA 部署指南](docs/rainyun-deploy.md)   | 用 Docker 镜像部署到雨云 RCA |
 | [AGENTS.md](AGENTS.md)                        | AI Agent 项目约定            |
 | [CLAUDE.md](CLAUDE.md)                        | Claude Code 工作区指南       |
