@@ -1,11 +1,35 @@
+# ============================================================================
+# coturn 独立部署（跑在一台普通 VPS / Dokploy 上，配合雨云 RCA 里的 monopoly 服务端）
+#
+#   cd docker/coturn
+#   cp .env.example .env   # 改 EXTERNAL_IP / TURN_SECRET
+#   docker compose up -d
+#
+# 为什么 coturn 不能和 monopoly 一起放雨云 RCA：
+#   coturn 需要一段连续的 UDP 中继端口（默认 49152-65535）并且要自己知道
+#   公网 IP，而 RCA 是 K8s，只能按单个端口做 TCP/UDP 映射，无法暴露整个
+#   UDP 端口段。详见 README.md。
+#
+# 必须使用 host 网络：否则容器内部看到的不是公网 IP，中继地址会错。
+# ============================================================================
+
 services:
   coturn:
-    image: coturn/coturn:latest
+    image: coturn/coturn:debian
     container_name: monopoly-coturn
     restart: unless-stopped
     network_mode: host
     env_file:
-      - ../../.env
+      - .env
     volumes:
       - ./turnserver.conf:/etc/coturn/turnserver.conf:ro
-    command: ["-c", "/etc/coturn/turnserver.conf"]
+      - ${COTURN_CERTS_PATH:-./certs}:/etc/coturn/certs:ro
+    command:
+      - "-c"
+      - "/etc/coturn/turnserver.conf"
+      - "--realm=${TURN_REALM:-monopoly}"
+      - "--external-ip=${EXTERNAL_IP}"
+      - "--static-auth-secret=${TURN_SECRET}"
+      - "--min-port=${TURN_MIN_PORT:-49160}"
+      - "--max-port=${TURN_MAX_PORT:-49200}"
+      - "--log-file=stdout"

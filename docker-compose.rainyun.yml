@@ -1,0 +1,108 @@
+# ============================================================================
+# 雨云云应用 RCA 导入用 Docker Compose
+#
+# 用途：在 RainYun RCA「编辑版本 → 从 Docker 导入」里直接粘贴/上传这个文件，
+#       自动生成「服务端 + MySQL」两个容器。
+#
+# 导入后必须改的地方（见 docs/rainyun-deploy.md）：
+#   1. main.MONOPOLY_DOMAIN  → 改成 RCA 分配给你的访问地址（域名或节点 IP）
+#   2. main.PROTOCOL         → 域名 + HTTPS 时填 https，纯 IP:端口 填 http
+#   3. 所有 change-me-* 密码 / 密钥
+#
+# 说明：
+#   - 这里刻意不使用任何 ${...} 变量引用，避免 RCA 导入时出现
+#     `invalid character "{" in host name` 之类的未替换占位符报错。
+#   - 容器内的 `MYSQL_HOST: mysql` 用的是 Compose 服务名。若你在 RCA 面板里
+#     手动添加容器（而不是导入本文件），请把它改成 RCA 的内网互连变量：
+#         ${rca_svc_mysql_db}
+#     其中 mysql = 数据库容器名，db = 数据库容器的服务名。
+# ============================================================================
+
+services:
+  # --------------------------------------------------------------------------
+  # 主容器：API(8081) + ICE/PeerJS(8082) + Admin 管理面板(8083)
+  # --------------------------------------------------------------------------
+  main:
+    image: ghcr.io/okysu/mine-monopoly-server:latest
+    restart: unless-stopped
+    depends_on:
+      - mysql
+    environment:
+      # ---- 端口（容器内 / 对外保持一致，方便排查）----
+      SERVER_PORT: "8081"
+      ICE_SERVER_PORT: "8082"
+      MONOPOLY_ADMIN_PORT: "8083"
+
+      # ---- 对外访问地址：务必改成 RCA 实际分配的地址 ----
+      PROTOCOL: http
+      MONOPOLY_DOMAIN: 127.0.0.1
+
+      # ---- 路径前缀：留空 = 端口模式（RCA 上推荐）----
+      # 只有在你用 nginx / 雨云网站代理做了「路径反代并剥掉前缀」时才填写
+      API_BASE_PREFIX: ""
+      ICE_BASE_PREFIX: ""
+      ADMIN_BASE_PREFIX: ""
+
+      # ---- MySQL ----
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: monopoly
+      MYSQL_USERNAME: monopoly
+      MYSQL_PASSWORD: change-me-db-password
+
+      # ---- TURN / STUN ----
+      # TURN_URL 填你自己的 coturn 地址（见 docker/coturn/）。
+      # 没有 TURN 时也必须有值，否则服务端生成 iceServers 会直接抛错。
+      TURN_URL: 127.0.0.1
+      TURN_PORT: "5349"
+      STUN_PORT: "3478"
+      TURN_SECRET: change-me-turn-secret
+      TURN_TTL: "86400"
+      COTURN_METRICS_URL: http://127.0.0.1:9641/metrics
+
+      # ---- 运行环境 ----
+      NODE_ENV: production
+
+      # ---- 地图产物加密密钥：必须是 16 位 ASCII 字符 ----
+      MAP_ENCRYPT_KEY: change16charkey!
+
+      # ---- 本地上传目录（相对 /app）----
+      AVATAR_STORAGE_PATH: monopoly/user-avatar
+      GAME_MAP_STORAGE_PATH: monopoly/game-map
+
+      # ---- 可选：腾讯云 COS（不配则文件落在持久化卷里）----
+      # TC_ID: ""
+      # TC_KEY: ""
+      # TC_BUCKET_NAME: ""
+      # TC_REGION: ""
+    ports:
+      - "8081:8081"
+      - "8082:8082"
+      - "8083:8083"
+    volumes:
+      # /app/public 存放头像、地图、日志，必须持久化
+      - monopoly-public:/app/public
+
+  # --------------------------------------------------------------------------
+  # 数据库容器：仅供主容器内网访问
+  # --------------------------------------------------------------------------
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: change-me-root-password
+      MYSQL_DATABASE: monopoly
+      MYSQL_USER: monopoly
+      MYSQL_PASSWORD: change-me-db-password
+    # 只做内网暴露，不要 open 到公网
+    expose:
+      - "3306"
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - mysql-data:/var/lib/mysql
+
+volumes:
+  monopoly-public:
+  mysql-data:
