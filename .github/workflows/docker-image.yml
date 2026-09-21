@@ -1,0 +1,191 @@
+name: Docker Image
+
+# 构建「服务端 + Admin 面板」镜像并推送到 GHCR，供雨云云应用 RCA 拉取使用。
+#
+# 触发方式：
+#   - push 到 main / dev 分支（仅当相关路径有改动时）
+#   - push 形如 server-v1.2.3 的 tag
+#   - 手动 workflow_dispatch（可选择不推送，仅验证构建）
+#
+# 产出镜像：ghcr.io/<owner>/mine-monopoly-server
+#   latest        main 分支最新构建
+#   main / dev    对应分支最新构建
+#   1.2.3 / 1.2   server-v1.2.3 这类 tag
+#   sha-xxxxxxx   每次提交
+#
+# 详细部署步骤见 docs/rainyun-deploy.md
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+    tags:
+      - 'server-v*'
+    paths:
+      - 'apps/server/**'
+      - 'apps/admin/**'
+      - 'packages/env/**'
+      - 'packages/types/**'
+      - 'packages/utils/**'
+      - 'docker/**'
+      - '.dockerignore'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - '.github/workflows/docker-image.yml'
+  pull_request:
+    paths:
+      - 'apps/server/**'
+      - 'apps/admin/**'
+      - 'packages/**'
+      - 'docker/**'
+      - '.dockerignore'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - '.github/workflows/docker-image.yml'
+  workflow_dispatch:
+    inputs:
+      push_image:
+        description: '构建完成后是否推送到 GHCR'
+        type: boolean
+        default: true
+      platforms:
+        description: '目标平台（雨云 RCA 是 amd64，同时构建 arm64 方便本地/其它环境用）'
+        type: choice
+        options:
+          - 'linux/amd64'
+          - 'linux/amd64,linux/arm64'
+        default: 'linux/amd64,linux/arm64'
+
+# 同一分支的重复构建取消旧的，tag 构建不取消
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build:
+    name: Build & Push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute image name and tags
+        id: meta
+        env:
+          REPO: ${{ github.repository }}
+          GIT_REF: ${{ github.ref }}
+          GIT_REF_NAME: ${{ github.ref_name }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_PUSH: ${{ inputs.push_image }}
+        run: |
+          set -euo pipefail
+
+          # GHCR 要求镜像路径全小写，而 GitHub 用户名可能含大写
+          IMAGE="${REGISTRY}/$(printf '%s' "${REPO}" | tr '[:upper:]' '[:lower:]')-server"
+          TAGS="${IMAGE}:sha-${GITHUB_SHA:0:7}"
+
+          if [[ "${GIT_REF}" == refs/tags/server-v* ]]; then
+            VERSION="${GIT_REF_NAME#server-v}"
+            TAGS="${TAGS},${IMAGE}:${VERSION}"
+            if [[ "${VERSION}" == *.*.* ]]; then
+              TAGS="${TAGS},${IMAGE}:${VERSION%.*}"
+            fi
+            TAGS="${TAGS},${IMAGE}:latest"
+          elif [[ "${GIT_REF_NAME}" == "main" ]]; then
+            TAGS="${TAGS},${IMAGE}:latest,${IMAGE}:main"
+          elif [[ "${GIT_REF}" == refs/heads/* ]]; then
+            TAGS="${TAGS},${IMAGE}:${GIT_REF_NAME}"
+          fi
+
+          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            SHOULD_PUSH=false
+          elif [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            SHOULD_PUSH="${INPUT_PUSH:-true}"
+          else
+            SHOULD_PUSH=true
+          fi
+
+          {
+            echo "image=${IMAGE}"
+            echo "tags=${TAGS}"
+            echo "push=${SHOULD_PUSH}"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Docker 镜像构建"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "| --- | --- |"
+            echo "| 镜像 | \`${IMAGE}\` |"
+            echo "| 标签 | \`${TAGS//,/\`, \`}\` |"
+            echo "| 推送 | \`${SHOULD_PUSH}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Determine target platforms
+        id: platforms
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_PLATFORMS: ${{ inputs.platforms }}
+          SHOULD_PUSH: ${{ steps.meta.outputs.push }}
+        run: |
+          set -euo pipefail
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" && -n "${INPUT_PLATFORMS:-}" ]]; then
+            VALUE="${INPUT_PLATFORMS}"
+          elif [[ "${SHOULD_PUSH}" == "true" ]]; then
+            VALUE="linux/amd64,linux/arm64"
+          else
+            # PR 只验证 amd64，省 CI 时间
+            VALUE="linux/amd64"
+          fi
+          echo "value=${VALUE}" >> "$GITHUB_OUTPUT"
+          echo "目标平台：${VALUE}"
+
+      - name: Set up QEMU
+        if: contains(steps.platforms.outputs.value, 'arm64')
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: steps.meta.outputs.push == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: ${{ steps.platforms.outputs.value }}
+          push: ${{ steps.meta.outputs.push }}
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            REVISION=${{ github.sha }}
+            SOURCE_URL=https://github.com/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # 关闭 provenance / sbom：附加的 attestation manifest 会让部分较老的
+          # 容器运行时（含某些平台的镜像拉取实现）解析失败。
+          provenance: false
+          sbom: false
+
+      - name: Image digest
+        if: steps.meta.outputs.push == 'true'
+        run: |
+          echo "digest: ${{ steps.build.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
