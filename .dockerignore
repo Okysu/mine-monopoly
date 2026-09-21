@@ -20,8 +20,9 @@ packages/components
 .git
 .gitignore
 
-# Docker files
-docker/
+# Docker files（Dockerfile 本身由 docker 单独读取，这里只放行构建时需要的 entrypoint）
+docker/*
+!docker/entrypoint.sh
 
 # Worktrees
 .worktrees

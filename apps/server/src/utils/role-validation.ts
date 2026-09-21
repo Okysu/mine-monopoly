@@ -9,6 +9,9 @@ const AllowPath = {
 	Admin: [],
 	User: ["/user/info"],
 	Ignore: [
+		// 容器/负载均衡探活接口，不能要求携带 token，
+		// 否则 Docker HEALTHCHECK、RCA/K8s 的探针永远失败
+		"/health",
 		"/upload/avatar",
 		"/user/public-key",
 		"/user/encryption-key",
