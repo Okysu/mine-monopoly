@@ -82,6 +82,9 @@ web_modules/
 .env.production.local
 .env.local
 
+# Dokploy 部署变量（含真实密钥，务必不要提交）
+dokploy.env
+
 # parcel-bundler cache (https://parceljs.org/)
 .cache
 .parcel-cache
