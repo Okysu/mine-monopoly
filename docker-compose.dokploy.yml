@@ -1,5 +1,5 @@
 # ============================================================================
-# Dokploy 部署用 Docker Compose（服务端 + MySQL）
+# Dokploy 部署用 Docker Compose —— 服务端 + MySQL + coturn 一次性部署
 #
 # 用法（详见 docs/dokploy-deploy.md）：
 #   Dokploy → Create Service → Compose
@@ -10,13 +10,18 @@
 # ⚠️ Dokploy 的 Environment 变量**不会自动注入容器**，只会写到 compose 同目录的 .env。
 #    所以下面每一项都用 ${VAR:-默认值} 显式引用了一次。
 #
-# ⚠️ Dokploy 的持久化卷请用「命名卷」（本文件就是），不要用绝对宿主机路径
-#    （绝对路径会在每次部署时被清掉；需要 bind mount 的话要用 ../files/xxx）。
+# ⚠️ 持久化卷请用「命名卷」（本文件就是），不要用绝对宿主机路径
+#    （绝对路径会在每次部署时被清掉；确实需要 bind mount 要用 ../files/xxx）。
+#
+# 三个容器：
+#   main    API 8081 / ICE 8082 / Admin 8083   ← 走 Dokploy Domains 反代到域名
+#   mysql   仅 compose 内网
+#   coturn  STUN/TURN，host 网络（联机中继）
 # ============================================================================
 
 services:
   # --------------------------------------------------------------------------
-  # 主容器：API(8081) + ICE/PeerJS(8082) + Admin 管理面板(8083)
+  # 主容器：API + ICE/PeerJS 信令 + Admin 管理面板
   # --------------------------------------------------------------------------
   main:
     image: ${IMAGE:-ghcr.io/okysu/mine-monopoly-server:latest}
@@ -30,8 +35,8 @@ services:
       MONOPOLY_ADMIN_PORT: "8083"
 
       # ---- 对外访问地址 ----
-      # 端口模式：PROTOCOL=http，MONOPOLY_DOMAIN=你的服务器 IP 或域名
-      # 域名+HTTPS 模式：PROTOCOL=https，MONOPOLY_DOMAIN=域名，并填下面三个前缀
+      # 端口模式：PROTOCOL=http，MONOPOLY_DOMAIN=服务器 IP
+      # 域名+HTTPS：PROTOCOL=https，MONOPOLY_DOMAIN=域名，并填下面两个前缀
       PROTOCOL: ${PROTOCOL:-http}
       MONOPOLY_DOMAIN: ${MONOPOLY_DOMAIN:-localhost}
       API_BASE_PREFIX: ${API_BASE_PREFIX:-}
@@ -45,13 +50,14 @@ services:
       MYSQL_USERNAME: monopoly
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:-change-me-db-password}
 
-      # ---- TURN / STUN（放在另一台公网 VPS 上，见 docker/coturn/）----
-      TURN_URL: ${TURN_URL:-127.0.0.1}
+      # ---- TURN / STUN（coturn 就在同一个 compose 里）----
+      # TURN_URL 不填时自动跟随 MONOPOLY_DOMAIN
+      TURN_URL: ${TURN_URL:-${MONOPOLY_DOMAIN:-127.0.0.1}}
       TURN_PORT: ${TURN_PORT:-5349}
       STUN_PORT: ${STUN_PORT:-3478}
       TURN_SECRET: ${TURN_SECRET:-change-me-turn-secret}
       TURN_TTL: ${TURN_TTL:-86400}
-      COTURN_METRICS_URL: ${COTURN_METRICS_URL:-http://127.0.0.1:9641/metrics}
+      COTURN_METRICS_URL: ${COTURN_METRICS_URL:-http://coturn:9641/metrics}
 
       # ---- 运行环境 ----
       NODE_ENV: production
@@ -66,8 +72,7 @@ services:
       # TC_BUCKET_NAME: ${TC_BUCKET_NAME:-}
       # TC_REGION: ${TC_REGION:-}
 
-    # 端口直连模式。若改用 Dokploy 的 Domains（Traefik）访问，可以删掉这段，
-    # 但 TURN/客户端调试时留着更方便。
+    # 端口直连模式，方便调试；纯域名访问时也可以保留
     ports:
       - "8081:8081"
       - "8082:8082"
@@ -99,13 +104,64 @@ services:
     networks:
       - monopoly
 
+  # --------------------------------------------------------------------------
+  # coturn：WebRTC 中继（对称 NAT / 严格网络下联机必需）
+  #
+  # 为什么用 bridge + 端口段发布，而不是 network_mode: host：
+  #   · host 网络会和 Dokploy 注入的 dokploy-network 打架（两者不能共存），
+  #     一旦冲突整个应用都起不来
+  #   · bridge 下 coturn 和 main 在同一个 compose 内网，
+  #     Admin 面板可以直接用 http://coturn:9641/metrics 抓指标
+  #   · Docker 支持发布端口「段」，所以 49160-49200 这一段 UDP 可以整体映射
+  # 代价：容器内看不到宿主机公网 IP，所以 EXTERNAL_IP 变成必填项。
+  #
+  # 需要放行的端口：
+  #   3478/udp + 3478/tcp       STUN/TURN
+  #   49160-49200/udp           TURN 中继（可用 TURN_MIN/MAX_PORT 调整）
+  #   9641 不用开，只在 compose 内网可见
+  #
+  # 说明：这里没有启用 turns:（5349/TLS），因为那需要把证书放进容器。
+  # 只提供 UDP TURN 对绝大多数家用/移动网络已经够用；确实需要 TLS 中继，
+  # 用 docker/coturn/docker-compose.yml 单独部署并挂载证书。
+  # --------------------------------------------------------------------------
+  coturn:
+    image: coturn/coturn:debian
+    restart: unless-stopped
+    environment:
+      TURN_REALM: ${TURN_REALM:-${MONOPOLY_DOMAIN:-monopoly}}
+      TURN_SECRET: ${TURN_SECRET:-change-me-turn-secret}
+      # 必填：服务器公网 IP。bridge 网络里 coturn 探测不到公网地址，
+      # 不填的话分配出去的中继地址会是容器内网 IP（192.168.x.x），客户端连不上。
+      EXTERNAL_IP: ${EXTERNAL_IP:?coturn 需要 EXTERNAL_IP，请在 Dokploy 的 Environment 里填服务器公网 IP}
+      TURN_MIN_PORT: ${TURN_MIN_PORT:-49160}
+      TURN_MAX_PORT: ${TURN_MAX_PORT:-49200}
+    ports:
+      - "3478:3478/udp"
+      - "3478:3478/tcp"
+      - "${TURN_MIN_PORT:-49160}-${TURN_MAX_PORT:-49200}:${TURN_MIN_PORT:-49160}-${TURN_MAX_PORT:-49200}/udp"
+    networks:
+      - monopoly
+    # coturn 配置文件不支持环境变量展开，所以全部用命令行参数传
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        set -- turnserver --log-file=stdout --fingerprint \
+          --listening-port=3478 \
+          --realm="$$TURN_REALM" \
+          --static-auth-secret="$$TURN_SECRET" \
+          --min-port="$$TURN_MIN_PORT" \
+          --max-port="$$TURN_MAX_PORT" \
+          --prometheus --prometheus-port=9641 \
+          --external-ip="$$EXTERNAL_IP"
+        echo "[coturn] exec: $$*"
+        exec "$$@"
+
 volumes:
   monopoly-public:
   mysql-data:
 
 networks:
-  # 显式声明一个内部网络，保证 main ↔ mysql 一定互通
-  # （Dokploy 配置 Domain 时会额外给 main 挂上 dokploy-network；
-  #   如果两边都挂上后仍连不上，见 docs/dokploy-deploy.md 的排查一节）
+  # main ↔ mysql 的内网。coturn 用 host 网络，不在这个网络里。
   monopoly:
     driver: bridge

@@ -1,33 +1,29 @@
 # Dokploy 部署指南
 
-用 [Dokploy](https://docs.dokploy.com/docs/core/docker-compose) 的 **Compose / Stack** 部署 Mine Monopoly 服务端（API + ICE + Admin 管理面板）。
+用 [Dokploy](https://docs.dokploy.com/docs/core/docker-compose) 的 **Compose / Stack**，一条 compose 把 **服务端 + MySQL + coturn** 全部部署上去。
 
-- 服务端 + MySQL → **同一个 Dokploy Compose 应用**（两个容器）
-- coturn（WebRTC 中继）→ 同一台 VPS 或另一台，用 [docker/coturn/](../docker/coturn/README.md) 单独部署
+- `main`：API + ICE/PeerJS 信令 + Admin 管理面板
+- `mysql`：内网数据库
+- `coturn`：STUN/TURN 中继（联机必需，host 网络）
 
-```mermaid
-flowchart LR
-  C[客户端] --> A
-  subgraph DK[Dokploy - Compose 应用]
-    A[main: 8081 API / 8082 ICE / 8083 Admin]
-    A --- M[(mysql: 3306 内网)]
-  end
-  A -. TURN 凭证 .-> T[coturn / 公网 VPS]
+```
+                        ┌──────── Dokploy / 同一台 VPS ────────┐
+  浏览器 ──HTTPS──▶     │  Traefik ──▶ main :8081 :8082 :8083  │
+                        │                  │                    │
+   游戏客户端 ──WSS──▶   │                  └──▶ mysql :3306     │
+                        │  coturn  3478/udp + 49160-49200/udp   │
+                        └───────────────────────────────────────┘
 ```
 
 ---
 
 ## 0. 前置：镜像已构建并公开
 
-Compose 里用的是 GHCR 镜像 `ghcr.io/okysu/mine-monopoly-server:latest`。确认它已经构建好并且**是公开的**：
-
 ```bash
 docker pull ghcr.io/okysu/mine-monopoly-server:latest
 ```
 
-如果拉不下来，说明包还是私有：GitHub → 头像 → **Your packages** → `mine-monopoly-server` → **Package settings** → **Change visibility → Public**。
-
-> 镜像还没构建过？仓库 **Actions → Docker Image → Run workflow**。
+拉得下来就行。拉不动的话：GitHub → 头像 → **Your packages** → `mine-monopoly-server` → **Package settings** → **Change visibility → Public**；镜像没构建过就去 **Actions → Docker Image → Run workflow**。
 
 ---
 
@@ -43,51 +39,84 @@ Dokploy → 你的项目 → **Create Service → Compose**
 | Branch | `main` |
 | Compose Path | `docker-compose.dokploy.yml` |
 
-用 **Git** 的好处：以后改了 compose 直接 push 就能重新部署。
+用 **Raw** 就把 [`docker-compose.dokploy.yml`](../docker-compose.dokploy.yml) 内容整段粘进编辑器。
 
-不想连仓库就选 **Raw**，把 [`docker-compose.dokploy.yml`](../docker-compose.dokploy.yml) 的内容整段粘进编辑器。
-
-> Compose 用 `image:` 拉取预构建镜像，**不需要 Dokploy 构建**，所以 Source 用 Git 也不会触发构建，几十秒就能起来。
+> compose 用 `image:` 拉预构建镜像，**Dokploy 不会构建**，所以用 Git 源也起得很快。
 
 ---
 
-## 2. 填环境变量
+## 2. 针对 `rich.oky.su` 的具体配置
 
-Dokploy 的 **Environment** 标签页里填。
+假设你要把域名 `rich.oky.su` 反代成 HTTPS 访问，**yml 一个字都不用改**，只要在 Dokploy 的 **Environment** 标签页里填下面这段：
 
-⚠️ 关键机制：Dokploy 把这些变量**只写进 compose 同目录的 `.env` 文件，不会自动注入容器**。所以 `docker-compose.dokploy.yml` 里每一项都写成了 `${VAR:-默认值}` 显式引用。你在 UI 里改了值，compose 插值就会用你的值。
+```dotenv
+MONOPOLY_DOMAIN=rich.oky.su
+PROTOCOL=https
+API_BASE_PREFIX=/monopoly-server
+ICE_BASE_PREFIX=/monopoly-ice
 
-**必须改的：**
+MYSQL_PASSWORD=换成强密码
+MYSQL_ROOT_PASSWORD=换成另一个强密码
+MAP_ENCRYPT_KEY=换成16位密钥
+TURN_SECRET=换成强密钥
+EXTERNAL_IP=你的服务器公网IP
+```
 
-| 变量 | 说明 |
-| --- | --- |
-| `MONOPOLY_DOMAIN` | 你的服务器公网 IP 或域名，**不带协议和端口** |
-| `MYSQL_PASSWORD` | 数据库密码，自己生成一个强的 |
-| `MYSQL_ROOT_PASSWORD` | MySQL root 密码 |
+几点说明：
 
-**按需改的：**
+- **`MONOPOLY_DOMAIN` 不带协议、不带端口**，只写域名。
+- **`TURN_URL` 不用填**，留空时会自动跟随 `MONOPOLY_DOMAIN`（compose 里写的是 `${TURN_URL:-${MONOPOLY_DOMAIN:-127.0.0.1}}`）。想单独用别的 TURN 地址再覆盖。
+- **`EXTERNAL_IP` 必填**：服务器公网 IP。coturn 跑在 bridge 网络里，看不到宿主机公网地址，不填的话它分配出去的中继地址会是容器内网 IP（`172.x`），客户端连不上。不填的话 compose 会直接报错，不会带着坏配置跑起来。
+- `ADMIN_BASE_PREFIX` 保持留空（Admin 挂在根路径 `/`，它用的是 `createWebHistory('/')`）。
 
-| 变量 | 默认值 | 说明 |
+如果非要硬编码进 yml 而不是用环境变量，改 `docker-compose.dokploy.yml` 里 `main.environment` 的这几行：
+
+```yaml
+      PROTOCOL: https                                  # 原为 ${PROTOCOL:-http}
+      MONOPOLY_DOMAIN: rich.oky.su                     # 原为 ${MONOPOLY_DOMAIN:-localhost}
+      API_BASE_PREFIX: /monopoly-server                # 原为 ${API_BASE_PREFIX:-}
+      ICE_BASE_PREFIX: /monopoly-ice                   # 原为 ${ICE_BASE_PREFIX:-}
+```
+
+（不推荐，因为密码之类的也都要硬编码进去，而 Dokploy 的 Environment 变量本来就会覆盖。）
+
+---
+
+## 3. 配置域名（Dokploy Domains）
+
+> 前置：`rich.oky.su` 的 DNS **A 记录**已经指向这台服务器。
+
+Dokploy → 你的 Compose 服务 → **Domains** 标签页 → **Add Domain**，加 **3 条**：
+
+| Host | Path | Strip Path | Container Port | HTTPS |
+| --- | --- | --- | --- | --- |
+| `rich.oky.su` | `/monopoly-server` | ✅ 开 | `8081` | ✅ |
+| `rich.oky.su` | `/monopoly-ice` | ✅ 开 | `8082` | ✅ |
+| `rich.oky.su` | `/` | ❌ 关 | `8083` | ✅ |
+
+为什么要这样拆（对应 `apps/server/app.ts` 和客户端 `global.config.ts`）：
+
+| 请求 | Traefik 处理 | 容器收到 |
 | --- | --- | --- |
-| `PROTOCOL` | `http` | 端口模式填 `http`；走 HTTPS 域名填 `https` |
-| `TURN_URL` | `127.0.0.1` | coturn 的公网 IP / 域名 |
-| `TURN_SECRET` | `change-me-turn-secret` | 必须和 coturn 的 `TURN_SECRET` 一致 |
-| `MAP_ENCRYPT_KEY` | `ChangeMe16Char!!` | **必须 16 位 ASCII 字符** |
-| `API_BASE_PREFIX` | 空 | 只有 HTTPS 域名模式才填，见第 4 节 |
-| `ICE_BASE_PREFIX` | 空 | 同上 |
-| `COTURN_METRICS_URL` | `http://127.0.0.1:9641/metrics` | Admin 的 TURN 监控，不需要就随便填 |
-| `IMAGE` | `ghcr.io/okysu/mine-monopoly-server:latest` | 想锁版本就改成 `:1.2.3` |
+| `https://rich.oky.su/monopoly-server/user/login` | 剥掉 `/monopoly-server` | `/user/login` → 8081 ✓ |
+| `https://rich.oky.su/monopoly-ice/peerjs/id` | 剥掉 `/monopoly-ice` | `/peerjs/id` → 8082 ✓ |
+| `https://rich.oky.su/`、`/assets/*`、`/env.js` | 不剥 | `/...` → 8083 ✓ |
 
-> 变量丢了也不会崩：compose 里都带了 `:-默认值`。但 `MONOPOLY_DOMAIN` 留着 `localhost` 的话 Admin 面板会请求不到 API。
+服务端在**没有前缀**时会生成带 `:端口` 的 URL（`http://域名:8081`），而 Traefik 只监听 443，所以走域名就**必须**用前缀模式。
+
+> ⚠️ **改完域名必须重新 Deploy**。Dokploy 对 Compose 是靠注入 Docker labels 配 Traefik 的，没有热重载（只有 Application 类型才有）。
+>
+> 点 **Preview Compose** 可以看最终生成的 compose，确认 `main` 上有 Traefik labels。
 
 ---
 
-## 3. 部署并访问（端口模式，最简单）
+## 4. 部署
 
-点 **Deploy**。日志里出现下面这些就成功了：
+点 **Deploy**。日志里出现下面这些就是成功了：
 
 ```
 [entrypoint] MySQL mysql:3306 已就绪（第 1 次尝试）
+[entrypoint] 启动：node server.js
  SERVER  INFO :  数据库连接成功
  SERVER  INFO :  API服务启动成功 8081端口
  SERVER  INFO :  Admin服务启动成功 8083端口
@@ -98,57 +127,29 @@ Dokploy 的 **Environment** 标签页里填。
 
 | 服务 | 地址 |
 | --- | --- |
-| Admin 管理面板 | `http://<服务器IP>:8083` |
-| API 健康检查 | `http://<服务器IP>:8081/health`（返回 `OK`） |
-| 联机信令 | `ws://<服务器IP>:8082` |
+| Admin 管理面板 | `https://rich.oky.su` |
+| API 健康检查 | `https://rich.oky.su/monopoly-server/health` → `OK` |
+| 联机信令 | `wss://rich.oky.su/monopoly-ice` |
 
-环境变量对应 `PROTOCOL=http` + `MONOPOLY_DOMAIN=<服务器IP>`。
+同时 8081/8082/8083 端口也是直接发布的，调试时可以用 `http://<IP>:8083` 绕过 Traefik 排查问题。
 
-⚠️ 记得在**云厂商安全组**和系统防火墙放行 `8081`、`8082`、`8083` 三个 TCP 端口。Dokploy 自己只占 80/443/3000。
+### 需要放行的端口
 
----
+| 端口 | 协议 | 用途 |
+| --- | --- | --- |
+| 80、443 | TCP | Traefik（Dokploy 自己管） |
+| **3478** | **UDP** | STUN/TURN，最常用，**别漏** |
+| 3478 | TCP | TURN over TCP |
+| **49160-49200** | **UDP** | TURN 中继端口段 |
 
-## 4. 可选：域名 + HTTPS（Dokploy Domains）
-
-想要 HTTPS 就必须走**路径前缀模式**，因为服务端在没有前缀时会生成带 `:端口` 的 URL，而 Traefik 只监听 443。
-
-### 4.1 改环境变量
-
-| 变量 | 值 |
-| --- | --- |
-| `PROTOCOL` | `https` |
-| `MONOPOLY_DOMAIN` | `monopoly.example.com` |
-| `API_BASE_PREFIX` | `/monopoly-server` |
-| `ICE_BASE_PREFIX` | `/monopoly-ice` |
-| `ADMIN_BASE_PREFIX` | 留空 |
-
-### 4.2 在 Domains 标签页加 3 条
-
-Dokploy 的 Domain 支持 **Path + Strip Path**，正好用来把前缀剥掉：
-
-| Host | Path | Strip Path | Container Port | HTTPS |
-| --- | --- | --- | --- | --- |
-| `monopoly.example.com` | `/monopoly-server` | ✅ 开 | `8081` | ✅ |
-| `monopoly.example.com` | `/monopoly-ice` | ✅ 开 | `8082` | ✅ |
-| `monopoly.example.com` | `/` | ❌ 关 | `8083` | ✅ |
-
-原理（对应 `apps/server` 与客户端 `global.config.ts`）：
-
-- 客户端请求 `https://域名/monopoly-server/user/login` → Traefik 剥掉 `/monopoly-server` → 容器收到 `/user/login` ✓
-- PeerJS 客户端用 `path=/monopoly-ice` 连 `https://域名:443/monopoly-ice/peerjs/id` → 剥掉前缀 → 容器收到 `/peerjs/id`（PeerJS 服务端默认 path 就是 `/`）✓
-- Admin 面板走 `/` 到 8083，静态资源是相对路径，`/env.js` 也在根路径 ✓
-
-> **Docker Compose 改域名后必须重新 Deploy**，Dokploy 对 Compose 是靠 Docker labels 配 Traefik 的，没有热重载（Application 类型才有）。
-
-### 4.3 部署后检查
-
-用 **Preview Compose** 按钮看一眼最终 compose，确认 `main` 同时挂着 `monopoly` 和 `dokploy-network` 两个网络。如果只剩 `dokploy-network`，`main` 就连不上 `mysql` 了 —— 把 compose 里 mysql 的 `networks` 改成和 main 一致，或给 mysql 也加上 `dokploy-network`（`external: true`）。
+> 9641（Prometheus 指标）**不用对公网开放**：coturn 和 main 在同一个 compose 内网，Admin 面板直接用 `http://coturn:9641/metrics` 抓。
+>
+> 「49160-49200 是 41 个端口，够约 40 个并发中继」。这是把 coturn 默认的 49152-65535（16384 个端口）压到最小的结果，人多就调大 `TURN_MAX_PORT`（记得同步放行新范围）。
+> 云厂商**安全组**和系统防火墙两层都要放行，尤其是 UDP —— 这是「部署完了还是连不上」最常见的原因。
 
 ---
 
 ## 5. 数据持久化与备份
-
-`docker-compose.dokploy.yml` 用的是两个**命名卷**：
 
 | 卷 | 容器路径 | 内容 |
 | --- | --- | --- |
@@ -161,48 +162,70 @@ Dokploy 的 Domain 支持 **Path + Strip Path**，正好用来把前缀剥掉：
 
 ---
 
-## 6. ⚠️ 客户端必须用匹配的配置重新构建
+## 6. 一次性部署 vs 独立部署 coturn
 
-这是自建服务器最容易踩的坑：**客户端（网页版 / Electron / Android）的服务器地址是构建时写死的**，客户端里没有「切换服务器」的设置项，官方发布的客户端只能连 `fatpaper.site`。
+`docker-compose.dokploy.yml` 已经把 coturn 合并进去了，**默认就是一次性部署**。关于这个选择：
 
-所以要跑自己的服务器，必须自己构建客户端，让它指向你的 Dokploy 地址。仓库的 `release.yml` 读的是 GitHub 仓库的 **Variables**，你在 **Settings → Secrets and variables → Actions → Variables** 里改这几个：
+**合并（默认，推荐给单机自用）**
 
-| Variable | 端口模式 | HTTPS 域名模式 |
-| --- | --- | --- |
-| `MONOPOLY_DOMAIN` | 服务器 IP | `monopoly.example.com` |
-| `PROTOCOL` | `http` | `https` |
-| `SERVER_PORT` | `8081` | `8081` |
-| `ICE_SERVER_PORT` | `8082` | `8082` |
-| `API_BASE_PREFIX` | 空 | `/monopoly-server` |
-| `ICE_BASE_PREFIX` | 空 | `/monopoly-ice` |
-| `MONOPOLY_ADMIN_PORT` | `8083` | `8083` |
+- 一个 Compose 应用、一个 Deploy 按钮，`TURN_URL` 自动跟随 `MONOPOLY_DOMAIN`。
+- coturn 用 **bridge 网络 + 端口段发布**（`49160-49200:49160-49200/udp`），和 main 在同一个 compose 内网，Admin 面板能直接抓 `coturn:9641` 的指标。
+- **不用 `network_mode: host`**：host 网络和 Dokploy 注入的 `dokploy-network` 无法共存，一旦冲突会让整个应用起不来；而且 host 网络下 main 也够不到 coturn 的指标端口。
+- 代价：容器内探测不到公网 IP，所以 `EXTERNAL_IP` 是必填项。
 
-然后打一个 `client-v*` tag 触发 `release.yml`，就会产出指向你服务器的 Electron 安装包 / APK / Web 包。
+**独立部署（想分开管理 / 放到另一台机器时）**
 
-只想快速试一下的话，本地构建网页版最省事：
+用 `docker/coturn/docker-compose.yml` 单独开一个 Compose 应用：
 
-```bash
-cp .env.example .env
-# 编辑 .env 填上面的值
-pnpm install
-pnpm --filter @mine-monopoly/env run build
-pnpm --filter @mine-monopoly/client run build:web
-# 产物在 apps/client/dist/frontend
+| 场景 | 建议 |
+| --- | --- |
+| 就想一台机器一个应用，联机也能用 | 用默认的合并版 |
+| coturn 放到另一台机器 / 多个服务共用 | 拆开用 `docker/coturn/docker-compose.yml` |
+| 需要 `turns:`（TLS 中继） | 拆开（合并版不挂证书） |
+
+拆开的话记得在 main 的环境变量里手动填 `TURN_URL=<coturn 的公网 IP 或域名>`，并把 `COTURN_METRICS_URL` 改成 `http://<coturn IP>:9641/metrics`（跨机器时服务名 `coturn` 不通）。
+
+### 关于 `turns:`（TLS 中继 / 5349）
+
+合并版**没有启用 TLS 中继**，只提供 UDP（3478）和 TCP（3478）—— 覆盖绝大多数家用和移动网络。日志里这几行是**预期行为**，不是错误：
+
 ```
+WARNING cannot find certificate file: turn_server_cert.pem (1)
+WARNING cannot start TLS and DTLS listeners because certificate file is not set properly
+```
+
+需要 TLS 中继（企业网/严格防火墙场景）时，用独立部署版并在 `docker/coturn/certs/` 放 `fullchain.pem` + `privkey.pem`（见 [docker/coturn/README.md](../docker/coturn/README.md)）。
+
+> 服务端会给每个用户同时下发 `turns:域名:5349?transport=tcp` 和 `turn:域名:3478?transport=udp`，ICE 会自动挑能通的那条。没有 TLS 就只是少了一条路，不影响 UDP 可用时的联机。
 
 ---
 
-## 7. TURN（联机中继）
+## 7. ⚠️ 客户端必须用匹配的配置重新构建
 
-WebRTC 在对称 NAT / 严格网络下必须有 TURN。Dokploy 这台机器可以直接再开一个 Compose 应用跑 coturn，按 [docker/coturn/README.md](../docker/coturn/README.md) 来：
+自建服务器最容易踩的坑：**客户端（网页版 / Electron / Android）的服务器地址是构建时写死的**。客户端源码里 `global.config.ts` 全部走 `env()` 构建期注入，没有 `env.js`，UI 里也没有「填写服务器地址」的设置项 —— 官方发布的客户端**只能连 `fatpaper.site`**。
 
-1. Dokploy → Create Service → Compose → Raw，粘贴 `docker/coturn/docker-compose.yml`
-2. 环境变量填 `EXTERNAL_IP`（VPS 公网 IP）、`TURN_SECRET`、`TURN_REALM`
-3. ⚠️ **网络模式必须是 host**（compose 里已经写了 `network_mode: host`），否则中继地址会变成容器内网地址
-4. 安全组放行 `3478/udp`、`3478/tcp`、`49160-49200/udp`
-5. 回到 monopoly 的 Environment，把 `TURN_URL` 填成这台机器的公网 IP、`TURN_SECRET` 填成同一个值，重新部署
+所以要让客户端连你的 `rich.oky.su`，得自己构建。改仓库的 **Settings → Secrets and variables → Actions → Variables**：
 
-> 端口细节和「为什么不能放在 RCA/K8s」见 [docker/coturn/README.md](../docker/coturn/README.md)。
+| Variable | 值（对应上面的 HTTPS 域名模式） |
+| --- | --- |
+| `MONOPOLY_DOMAIN` | `rich.oky.su` |
+| `PROTOCOL` | `https` |
+| `SERVER_PORT` | `8081` |
+| `ICE_SERVER_PORT` | `8082` |
+| `API_BASE_PREFIX` | `/monopoly-server` |
+| `ICE_BASE_PREFIX` | `/monopoly-ice` |
+| `MONOPOLY_ADMIN_PORT` | `8083` |
+
+然后打个 `client-v*` tag 触发 `release.yml`，产出指向你自己服务器的 Electron 安装包 / APK / Web 包。
+
+只想快速验证，本地构建网页版最省事：
+
+```bash
+cp .env.example .env    # 填上面的值
+pnpm install
+pnpm --filter @mine-monopoly/env run build
+pnpm --filter @mine-monopoly/client run build:web   # 产物在 apps/client/dist/frontend
+```
 
 ---
 
@@ -210,29 +233,42 @@ WebRTC 在对称 NAT / 严格网络下必须有 TURN。Dokploy 这台机器可�
 
 **`main` 一直重启，日志停在「等待 MySQL」**
 
-入口脚本最多等 300 秒（`DB_WAIT_TIMEOUT` 可调）。看 mysql 容器的日志确认它正常启动；密码不一致是最常见原因。
+入口脚本最多等 300 秒（可用 `DB_WAIT_TIMEOUT` 调）。看 mysql 容器日志确认它在正常启动；密码不一致最常见。
 
 **`数据库连接失败` / `ECONNREFUSED mysql:3306`**
 
-- `MYSQL_PASSWORD` 在 main 和 mysql 两边不一致（它们是同一个变量，一般不会）。
-- 网络被 Dokploy 的 domain 配置改掉了 —— 见 4.3。
-- MySQL 数据卷是用旧密码初始化的：改密码后**已初始化的卷不会同步**。要么删掉 `mysql-data` 卷重来（丢数据），要么改 `MYSQL_ROOT_PASSWORD` 用 root 登进去 `ALTER USER`。
+- 配了 Domain 之后 Dokploy 会给 `main` 额外挂 `dokploy-network`。用 **Preview Compose** 确认 `main` 同时还在 `monopoly` 网络上；如果只剩 `dokploy-network`，把 `mysql` 也加到同一个网络。
+- MySQL 数据卷是用旧密码初始化的：**改密码不会同步到已初始化的卷**。要么删掉 `mysql-data` 卷重来（丢数据），要么用 `MYSQL_ROOT_PASSWORD` 登进去 `ALTER USER`。
+
+**部署报 `coturn 需要 EXTERNAL_IP，请在 Dokploy 的 Environment 里填服务器公网 IP`**
+
+就是字面意思，去 Environment 补 `EXTERNAL_IP=<服务器公网 IP>`。这是故意做成硬失败的 —— 不填的话 coturn 会分配容器内网地址，联机静默失败，比直接报错难查得多。
+
+**只想先不要 coturn**
+
+把 `docker-compose.dokploy.yml` 里的 `coturn:` 整段删掉，再把 main 的 `COTURN_METRICS_URL` 随便填个不可达地址即可（Admin 的 TURN 监控会报错，不影响其它功能）。
 
 **Admin 面板白屏 / 请求发到 localhost**
 
-`MONOPOLY_DOMAIN` 还是默认的 `localhost`。改成实际地址后**重新 Deploy**。
+`MONOPOLY_DOMAIN` 没改。改完**重新 Deploy**。
 
-**Admin 面板能打开，但接口 404**
+**Admin 面板能开，但接口 404 或返回 HTML**
 
-用了 HTTPS 域名模式但 Traefik 没剥前缀（`Strip Path` 没开），或者 `API_BASE_PREFIX` 和 Domain 里的 Path 不一致。两者必须完全对应。
+Traefik 的 Path 与 `API_BASE_PREFIX` 不一致，或者 `Strip Path` 没开。两者必须严格对应。如果 `/monopoly-server/...` 返回的是 Admin 的 HTML，说明路由优先级不对，改用两个子域：`rich.oky.su` 只放 API/ICE 两条，Admin 单独用 `admin.oky.su` → `8083`（服务端已开启 CORS，跨域可用）。
 
-**图片/头像上传后显示不出来**
+**头像/图片上传后显示不出来**
 
-本地存储返回的 URL 用 `PROTOCOL://MONOPOLY_DOMAIN:PORT/static/...` 拼接。域名模式下确认 `PROTOCOL=https`、`MONOPOLY_DOMAIN` 是域名、`API_BASE_PREFIX` 与 Domain Path 一致。
+本地存储的 URL 用 `PROTOCOL://MONOPOLY_DOMAIN + API_BASE_PREFIX + /static/...` 拼接，三个值要和实际访问方式完全一致。
 
-**TURN 监控报错**
+**TURN 监控显示拉取失败**
 
-`COTURN_METRICS_URL` 指向的 9641 不可达。只影响监控展示，不影响联机。
+默认 `COTURN_METRICS_URL=http://coturn:9641/metrics`，依赖 coturn 和 main 在同一个 compose 网络里。测一下：
+
+```bash
+docker exec <main容器> wget -qO- http://coturn:9641/metrics | head
+```
+
+出来 `stun_binding_request` 之类的指标就说明正常。如果自己改成了别的地址（比如跨机器部署），要确保 main 能访问到。
 
 **重启后所有人掉登录**
 
@@ -244,9 +280,9 @@ WebRTC 在对称 NAT / 严格网络下必须有 TURN。Dokploy 这台机器可�
 
 | 文件 | 作用 |
 | --- | --- |
-| `docker-compose.dokploy.yml` | Dokploy Compose 部署定义（main + mysql） |
+| `docker-compose.dokploy.yml` | Dokploy 一次性部署（main + mysql + coturn） |
 | `docker/Dockerfile` | 镜像定义（服务端 + Admin 面板） |
 | `docker/entrypoint.sh` | 启动前等待 MySQL、初始化目录 |
 | `.github/workflows/docker-image.yml` | 构建并推送镜像到 GHCR |
-| `docker/coturn/` | coturn 独立部署（VPS / Dokploy / 宝塔） |
+| `docker/coturn/` | coturn 独立部署（拆开时用，或部署到另一台机器） |
 | `docs/rainyun-deploy.md` | 雨云 RCA 部署指南（另一条路线） |
