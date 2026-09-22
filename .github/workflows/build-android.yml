@@ -125,8 +125,8 @@ jobs:
           # 硬编码是为了让 fork 开箱即用 —— 代价是密钥对公开仓库可见，
           # 也就意味着任何人都能用这个密钥签一个"看起来是官方"的 APK。
           # 自己在内网装着玩可以接受；要对外分发请务必改用 Secrets。
-          KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 || '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' }}
-          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD || '389a4d6ca5fe46bd88e618e1' }}
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           KS_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS || 'minemonopoly' }}
         run: |
           set -euo pipefail
@@ -147,13 +147,20 @@ jobs:
         working-directory: apps/client/android
         run: ./gradlew assembleRelease --no-daemon
         env:
-          RELEASE_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 || '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' }}
-          RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD || '389a4d6ca5fe46bd88e618e1' }}
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS || 'minemonopoly' }}
-          RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD || secrets.ANDROID_KEYSTORE_PASSWORD || '389a4d6ca5fe46bd88e618e1' }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD || secrets.ANDROID_KEYSTORE_PASSWORD }}
 
       - name: 整理产物
         id: apk
+        env:
+          CFG_DOMAIN: ${{ vars.MONOPOLY_DOMAIN || 'rich-api.yby.zone' }}
+          CFG_PROTOCOL: ${{ vars.PROTOCOL || 'https' }}
+          CFG_API_PREFIX: ${{ vars.API_BASE_PREFIX || '/monopoly-server' }}
+          CFG_ICE_PREFIX: ${{ vars.ICE_BASE_PREFIX || '/monopoly-ice' }}
+          CFG_SERVER_PORT: ${{ vars.SERVER_PORT || '8081' }}
+          CFG_ICE_PORT: ${{ vars.ICE_SERVER_PORT || '8082' }}
         run: |
           set -euo pipefail
           VERSION=$(node -p "require('./apps/client/package.json').version")
@@ -166,11 +173,37 @@ jobs:
           OUT="dist-android/MineMonopoly-Android-${VERSION}.apk"
           cp "$SRC" "$OUT"
 
-          # 检查签名：用 debug 密钥签的包每次构建签名都不同，装新版要先卸载
+          # 检查签名：确认用的是我们自己的 keystore，而不是 debug 签名
+          SIGNER="未知"
           if command -v apksigner >/dev/null 2>&1; then
-            SIGNER=$(apksigner verify --print-certs "$OUT" 2>/dev/null | grep -m1 "Signer #1 certificate DN" || true)
-            echo "签名: ${SIGNER:-未知}"
+            SIGNER=$(apksigner verify --print-certs "$OUT" 2>/dev/null | grep -m1 "Signer #1 certificate DN" | sed 's/.*DN: //' || true)
+            SIGNER="${SIGNER:-未知}"
+          elif [ -x "$ANDROID_HOME/build-tools/36.0.0/apksigner" ]; then
+            SIGNER=$("$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$OUT" 2>/dev/null | grep -m1 "Signer #1 certificate DN" | sed 's/.*DN: //' || true)
+            SIGNER="${SIGNER:-未知}"
           fi
+          echo "签名证书: $SIGNER"
+          case "$SIGNER" in
+            *MineMonopoly*) echo "✅ 使用自建签名密钥" ;;
+            *"Android Debug"*) echo "::warning::用的是 debug 签名，下次装新版必须先卸载" ;;
+          esac
+
+          # 客户端拼地址的逻辑：有前缀 → 不带端口；无前缀 → 带端口
+          if [ -n "$CFG_API_PREFIX" ]; then
+            API_URL="${CFG_PROTOCOL}://${CFG_DOMAIN}${CFG_API_PREFIX}"
+          else
+            API_URL="${CFG_PROTOCOL}://${CFG_DOMAIN}:${CFG_SERVER_PORT}"
+          fi
+          if [ -n "$CFG_ICE_PREFIX" ]; then
+            ICE_URL="${CFG_PROTOCOL}://${CFG_DOMAIN}${CFG_ICE_PREFIX}"
+          else
+            ICE_URL="${CFG_PROTOCOL}://${CFG_DOMAIN}:${CFG_ICE_PORT}"
+          fi
+
+          # 从产物里读回真实写死的值，作为最终事实依据
+          BUNDLE=$(find apps/client/dist/frontend/assets -maxdepth 1 -name 'index-*.js' -printf '%s %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+          BAKED_DOMAIN=$(grep -oE 'MONOPOLY_DOMAIN:"[^"]*"' "$BUNDLE" | head -1 | cut -d'"' -f2)
+          BAKED_PREFIX=$(grep -oE 'API_BASE_PREFIX:"[^"]*"' "$BUNDLE" | head -1 | cut -d'"' -f2)
 
           {
             echo "### Android APK 构建完成"
@@ -179,8 +212,11 @@ jobs:
             echo "| --- | --- |"
             echo "| 版本 | \`${VERSION}\` |"
             echo "| 大小 | \`$(du -h "$OUT" | cut -f1)\` |"
-            echo "| 服务器 | \`${{ vars.PROTOCOL }}://${{ vars.MONOPOLY_DOMAIN }}:${{ vars.SERVER_PORT }}\` |"
-            echo "| 信令 | \`${{ vars.PROTOCOL }}://${{ vars.MONOPOLY_DOMAIN }}:${{ vars.ICE_SERVER_PORT }}\` |"
+            echo "| API | \`${API_URL}\` |"
+            echo "| 信令 | \`${ICE_URL}\` |"
+            echo "| 产物内实际域名 | \`${BAKED_DOMAIN:-未读到}\` |"
+            echo "| 产物内实际前缀 | \`${BAKED_PREFIX:-（空，端口模式）}\` |"
+            echo "| 签名 | \`${SIGNER}\` |"
             echo "| 文件 | \`$(basename "$OUT")\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
